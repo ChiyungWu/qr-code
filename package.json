@@ -8,13 +8,10 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "build-prerender": "node build-prerender.js",
-    "build-updatedist": "node build-updatedist.js",
     "build-seo": "npm run build && npm run build-prerender",
-    "build-vercel": "npm run build && npm run build-updatedist"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
-    "axios": "^1.11.0",
     "clsx": "^2.1.1",
     "framer-motion": "^12.23.12",
     "i18next": "^25.3.2",

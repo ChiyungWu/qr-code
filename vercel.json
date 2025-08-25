@@ -1,5 +1,5 @@
 {
-  "buildCommand": "npm run build-vercel",
-  "outputDirectory": "dist",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist-seo",
   "rewrites": [{ "source": "/:path*", "destination": "/index.html" }]
 }

@@ -1,8 +1,8 @@
+// build-seo.ts
 import {
   rmSync,
   cpSync,
   writeFileSync,
-  readFileSync,
   existsSync,
   readdirSync,
   mkdirSync,
@@ -13,117 +13,148 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 import { JSDOM } from 'jsdom';
 
+/* ----------------------
+   🧩 1. 統一設定區
+----------------------- */
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const distDir = resolve(__dirname, './dist');
-const wantDir = resolve(__dirname, './dist-seo');
-const viewDir = resolve(__dirname, './dist-seo-view');
 
-// 1. 刪除 wantDir 資料夾（如果存在）
-if (existsSync(wantDir)) {
-  rmSync(wantDir, { recursive: true, force: true });
+const CONFIG = {
+  port: 4173,
+  distDir: resolve(__dirname, './dist'),
+  wantDir: resolve(__dirname, './dist-seo'),
+  viewDir: resolve(__dirname, './dist-seo-view'),
+  langDir: resolve(__dirname, './src/locales'),
+  excludeLocale: 'all',
+  rootId: '#root',
+  waitTimeout: 10000,
+};
+
+/* ----------------------
+   🧹 2. 清理與初始化
+----------------------- */
+function prepareDirs() {
+  if (existsSync(CONFIG.wantDir))
+    rmSync(CONFIG.wantDir, { recursive: true, force: true });
+  cpSync(CONFIG.distDir, CONFIG.wantDir, { recursive: true });
+
+  if (existsSync(CONFIG.viewDir))
+    rmSync(CONFIG.viewDir, { recursive: true, force: true });
+  mkdirSync(CONFIG.viewDir);
 }
 
-// 2. 複製 distDir 到 wantDir
-cpSync(distDir, wantDir, { recursive: true });
+/* ----------------------
+   🧼 3. 集中管理清理規則
+----------------------- */
+function cleanDom(document) {
+  // 移除所有 svg
+  document.querySelectorAll('svg').forEach((el) => el.remove());
 
-// 3. 重建截圖資料夾
-if (existsSync(viewDir)) {
-  rmSync(viewDir, { recursive: true, force: true });
+  // 移除指定 ID 或節點
+  ['#_goober'].forEach((sel) =>
+    document.querySelectorAll(sel).forEach((el) => el.remove())
+  );
+
+  // 移除 data 屬性 (例如 data-rht-toaster)
+  document.querySelectorAll('[data-rht-toaster]').forEach((el) => el.remove());
+
+  // 移除自帶 class
+  document.documentElement.removeAttribute('class');
+
+  return document;
 }
-mkdirSync(viewDir);
 
-// 4. 讀取 ./src/locales 下所有 .json，排除 all.json
-const localesDir = resolve(__dirname, './src/locales');
-const localeFiles = readdirSync(localesDir).filter(
-  (file) => file.endsWith('.json') && basename(file, '.json') !== 'all'
-);
+/* ----------------------
+   🌐 4. 讀取語系清單
+----------------------- */
+function getLangKeys() {
+  const files = readdirSync(CONFIG.langDir)
+    .filter(
+      (f) =>
+        f.endsWith('.json') && basename(f, '.json') !== CONFIG.excludeLocale
+    )
+    .map((f) => basename(f, '.json'));
 
-// 5. 加入根目錄空字串 '' 代表預設語言
-const langKeys = ['', ...localeFiles.map((file) => basename(file, '.json'))];
+  return ['', ...files]; // '' 是預設語系
+}
 
-// 6. 啟動靜態伺服器
-const app = express();
-app.use(express.static(wantDir));
+/* ----------------------
+   🚀 5. 啟動伺服器並執行
+----------------------- */
+async function main() {
+  prepareDirs();
+  const langKeys = getLangKeys();
 
-const server = app.listen(4173, async () => {
-  console.log('伺服器啟動在 http://localhost:4173');
+  const app = express();
+  app.use(express.static(CONFIG.wantDir));
 
-  try {
+  const server = app.listen(CONFIG.port, async () => {
+    console.log(`伺服器啟動: http://localhost:${CONFIG.port}`);
+
     const browser = await puppeteer.launch();
 
     for (const langKey of langKeys) {
-      const url =
-        langKey === ''
-          ? 'http://localhost:4173/'
-          : `http://localhost:4173/?webLang=${langKey}`;
+      try {
+        const url = langKey
+          ? `http://localhost:${CONFIG.port}/?webLang=${langKey}`
+          : `http://localhost:${CONFIG.port}/`;
 
-      console.log(`處理: ${langKey || 'root'} → ${url}`);
+        console.log(`\n🔹 開始處理語系: ${langKey || 'root'} → ${url}`);
 
-      const page = await browser.newPage();
-      await page.goto(url, { waitUntil: 'networkidle0' });
+        const page = await browser.newPage();
+        await page.goto(url, { waitUntil: 'networkidle0' });
 
-      await page.waitForFunction(
-        () => {
-          const root = document.querySelector('#root');
-          return root && root.innerHTML.trim().length > 0;
-        },
-        { timeout: 10000 }
-      );
+        await page.waitForFunction(
+          (rootId) => {
+            const root = document.querySelector(rootId);
+            return root && root.innerHTML.trim().length > 0;
+          },
+          { timeout: CONFIG.waitTimeout },
+          CONFIG.rootId
+        );
 
-      const fullHtml = await page.evaluate(
-        () => document.documentElement.outerHTML
-      );
+        const fullHtml = await page.evaluate(
+          () => document.documentElement.outerHTML
+        );
+        const objDom = new JSDOM(fullHtml);
+        const document = cleanDom(objDom.window.document);
 
-      const objDom = new JSDOM(fullHtml);
-      const document = objDom.window.document;
-
-      // 7-1. 移除所有 <svg> 標籤（連同內容）
-      document.querySelectorAll('svg').forEach((svg) => svg.remove());
-
-      // 7-2. 移除歐有 特定的 # 元件
-      document.querySelectorAll('#_goober').forEach((el) => el.remove());
-      document.querySelectorAll('#_rht_toaster').forEach((el) => el.remove());
-
-      document.querySelectorAll('#_displayIp').forEach((el) => el.remove());
-      document.querySelectorAll('#_showError').forEach((el) => el.remove());
-
-      // 7-3. 清除 <html> 的 class 屬性 (dark | light)
-      document.documentElement.removeAttribute('class');
-
-      // 7-4. 序列化整份 HTML，[做 replace]，輸出存檔
-      let htmlString = document.documentElement.outerHTML;
-
-      if (langKey === '') {
-        writeFileSync(join(wantDir, 'index.html'), htmlString, 'utf-8');
-        console.log(`成功產生 root index.html`);
-      } else {
-        htmlString = htmlString
-          .replace(/href="\//g, 'href="../')
-          .replace(/src="\//g, 'src="../');
-
-        const targetDir = join(wantDir, langKey);
-        if (!existsSync(targetDir)) {
-          mkdirSync(targetDir, { recursive: true });
+        // HTML 字串處理
+        let htmlString = document.documentElement.outerHTML;
+        if (langKey) {
+          htmlString = htmlString
+            .replace(/href="\//g, 'href="../')
+            .replace(/src="\//g, 'src="../');
         }
+
+        // 輸出 HTML
+        const targetDir = langKey
+          ? join(CONFIG.wantDir, langKey)
+          : CONFIG.wantDir;
+        if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
         writeFileSync(join(targetDir, 'index.html'), htmlString, 'utf-8');
-        console.log(`成功產生 ${langKey}/index.html`);
+        console.log(`✅ 寫入 ${langKey || 'root'}/index.html`);
+
+        // 截圖
+        const shotFile = join(
+          CONFIG.viewDir,
+          langKey ? `${langKey}.png` : 'root.png'
+        );
+        await page.screenshot({ path: shotFile, fullPage: true });
+        console.log(`📸 截圖完成: ${shotFile}`);
+
+        await page.close();
+      } catch (err) {
+        console.error(`❌ 處理 ${langKey || 'root'} 失敗:`, err);
       }
-
-      // 7-5. 截圖存檔
-      const viewFile =
-        langKey === ''
-          ? join(viewDir, 'root.png')
-          : join(viewDir, `${langKey}.png`);
-      await page.screenshot({ path: viewFile, fullPage: true });
-      console.log(`成功截圖: ${viewFile}`);
-
-      await page.close();
     }
 
     await browser.close();
-  } catch (err) {
-    console.error('預渲染失敗:', err);
-  } finally {
     server.close();
-  }
+    console.log('\n🎉 所有語系處理完成！');
+  });
+}
+
+main().catch((err) => {
+  console.error('⛔️ 發生重大錯誤:', err);
+  process.exit(1);
 });
